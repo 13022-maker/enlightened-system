@@ -89,7 +89,8 @@ class AIPerformanceAnalyzer:
             當前價格
         """
         try:
-            ticker = yf.Ticker(f"{stock_code}.TW")
+            ticker_code = f"{stock_code}.TW" if stock_code.isdigit() else stock_code
+            ticker = yf.Ticker(ticker_code)
             hist = ticker.history(period="1d")
             if not hist.empty:
                 return hist['Close'].iloc[-1]

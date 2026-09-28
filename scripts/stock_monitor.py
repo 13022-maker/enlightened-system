@@ -80,13 +80,18 @@ def read_stock_list():
     return default_stocks
 
 
+def format_ticker(stock_code: str) -> str:
+    """台股代碼（純數字）補上 .TW，美股代碼維持原樣"""
+    return f"{stock_code}.TW" if stock_code.isdigit() else stock_code
+
+
 def get_stock_name(stock_code: str) -> str:
     """獲取股票名稱"""
     if stock_code in STOCK_NAMES and STOCK_NAMES[stock_code] != stock_code:
         return STOCK_NAMES[stock_code]
 
     try:
-        ticker = yf.Ticker(f"{stock_code}.TW")
+        ticker = yf.Ticker(format_ticker(stock_code))
         info = ticker.info
         name = info.get('longName', '') or info.get('shortName', '') or stock_code
         if name and name != stock_code:
@@ -102,7 +107,7 @@ def get_stock_name(stock_code: str) -> str:
 def fetch_stock_data(stock_code: str) -> Optional[Dict]:
     """獲取股票技術數據"""
     try:
-        ticker = yf.Ticker(f"{stock_code}.TW")
+        ticker = yf.Ticker(format_ticker(stock_code))
         hist = ticker.history(period="60d")
         hist = hist.dropna()
 

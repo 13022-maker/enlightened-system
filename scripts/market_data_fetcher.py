@@ -279,8 +279,12 @@ class ForeignInvestmentFetcher:
             {stock_code: foreign_data}
         """
         results = {}
-        
+
         for code in stock_codes:
+            if not code.isdigit():
+                # 外資籌碼僅台股適用，美股代碼直接跳過
+                continue
+
             try:
                 data = ForeignInvestmentFetcher.get_foreign_investment(code)
                 if data:

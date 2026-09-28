@@ -19,7 +19,7 @@ class DataAdjustmentDetector:
         """檢測股票是否有除權息或分割"""
         
         try:
-            ticker_code = f"{stock_code}.TW"
+            ticker_code = f"{stock_code}.TW" if stock_code.isdigit() else stock_code
             ticker = yf.Ticker(ticker_code)
             hist = ticker.history(period=period)
             
