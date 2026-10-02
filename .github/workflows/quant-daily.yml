@@ -1,0 +1,43 @@
+name: Quant 每日訊號與回測
+on:
+  schedule:
+    - cron: '30 9 * * 1-5'    # 台灣時間 17:30（收盤＋法人資料公布後）
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  quant:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 安裝套件
+        run: pip install -r requirements.txt pytest
+      - name: 更新日K
+        run: python tools/update_data.py --start 2015-01-01
+      - name: 更新法人籌碼（FinMind）
+        env:
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+        run: python tools/fetch_chip.py --start 2015-01-01 || echo "籌碼抓取失敗，沿用舊資料"
+      - name: 單元測試
+        run: python -m pytest -q
+      - name: 回測（walk-forward）
+        run: python tools/run_backtest.py
+      - name: 產出訊號
+        run: |
+          python tools/export_signals.py
+          python tools/build_dashboard.py
+      - name: Telegram 推播
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python tools/notify_signals.py
+      - name: 提交資料與訊號
+        run: |
+          git config user.name "quant-bot"
+          git config user.email "quant-bot@users.noreply.github.com"
+          git add -A data output
+          git diff --cached --quiet || git commit -m "Quant 每日更新 $(TZ=Asia/Taipei date +%F)"
+          git push

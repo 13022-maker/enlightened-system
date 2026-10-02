@@ -1,0 +1,248 @@
+<title>開明體系看盤</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: 單欄看盤清單（仿券商 App 自選股），上方策略切換＋績效卡，點列展開四策略訊號 */
+:root{
+  --bg:#f3f4f6; --surface:#ffffff; --surface2:#eceef2; --fg:#14171c; --muted:#5f6672; --line:#dde0e6;
+  --accent:#2f6fe4; --up:#d9302f; --down:#14895a; --warn:#b26a00; --warn-bg:#fff4df;
+  --pill-buy:#d9302f; --pill-sell:#14895a; --pill-hold:#2f6fe4;
+  --font-body:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  --font-num:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#12151b; --surface:#1a1e26; --surface2:#232833; --fg:#e9ecf1; --muted:#9aa2b0; --line:#2a303b;
+  --accent:#4c8dff; --up:#ff5b5b; --down:#2fc283; --warn:#f0b04a; --warn-bg:#2d2414;
+  --pill-buy:#ff5b5b; --pill-sell:#2fc283; --pill-hold:#4c8dff; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#12151b; --surface:#1a1e26; --surface2:#232833; --fg:#e9ecf1; --muted:#9aa2b0; --line:#2a303b;
+  --accent:#4c8dff; --up:#ff5b5b; --down:#2fc283; --warn:#f0b04a; --warn-bg:#2d2414;
+  --pill-buy:#ff5b5b; --pill-sell:#2fc283; --pill-hold:#4c8dff; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-body);font-size:15px;line-height:1.5}
+.wrap{max-width:760px;margin:0 auto;padding-inline:16px;padding-block:16px 48px;display:flex;flex-direction:column;gap:14px}
+.num{font-family:var(--font-num);font-variant-numeric:tabular-nums}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{font-size:24px;margin:0;font-weight:700;letter-spacing:.02em}
+.asof{color:var(--muted);font-size:13px}
+.tabs{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;border-bottom:1px solid var(--line)}
+.tabs::-webkit-scrollbar{display:none}
+.tab{flex:0 0 auto;background:none;border:0;color:var(--muted);font:500 15px var(--font-body);padding:10px 10px 12px;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-1px}
+.tab[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--accent);font-weight:700}
+.tab:focus-visible,.chip:focus-visible,.row:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.card h2{font-size:16px;margin:0}
+.card p{margin:0;color:var(--muted);font-size:13.5px}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.stat{display:flex;flex-direction:column;gap:2px;min-width:0}
+.stat .k{font-size:11.5px;color:var(--muted);letter-spacing:.04em}
+.stat .v{font-size:17px;font-weight:600}
+.stat .b{font-size:11.5px;color:var(--muted)}
+.warn{background:var(--warn-bg);color:var(--warn);border-radius:8px;padding:8px 10px;font-size:13px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.chip{border:1px solid var(--line);background:var(--surface);color:var(--fg);border-radius:999px;padding:5px 12px;font:13px var(--font-body);cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.toolbar .spacer{flex:1}
+select{font:13px var(--font-body);padding:5px 8px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--fg)}
+.list{background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.listhead{display:grid;grid-template-columns:minmax(0,1fr) 84px 92px;gap:10px;padding:8px 14px;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line)}
+.listhead span:not(:first-child){text-align:right}
+.row{display:block;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);color:inherit;font:inherit;padding:12px 14px;cursor:pointer}
+.row:last-child{border-bottom:0}
+.row:hover{background:var(--surface2)}
+.r1{display:grid;grid-template-columns:minmax(0,1fr) 84px 92px;gap:10px;align-items:center}
+.id{display:flex;flex-direction:column;min-width:0}
+.code{font-weight:700;font-size:17px;font-family:var(--font-num)}
+.code small{font-family:var(--font-body);font-weight:400;color:var(--muted);font-size:11px;margin-left:6px}
+.name{color:var(--muted);font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.px{text-align:right;display:flex;flex-direction:column}
+.px .p{font-size:17px}
+.px .rng{font-size:11px;color:var(--muted)}
+.chg{text-align:right;display:flex;flex-direction:column;font-size:15px}
+.up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--muted)}
+.r2{display:flex;align-items:center;gap:10px;margin-top:8px;min-width:0}
+.pill{flex:0 0 auto;font-size:12px;font-weight:700;border-radius:5px;padding:2px 8px;border:1px solid currentColor}
+.pill.BUY{color:#fff;background:var(--pill-buy);border-color:var(--pill-buy)}
+.pill.SELL{color:#fff;background:var(--pill-sell);border-color:var(--pill-sell)}
+.pill.HOLD{color:var(--pill-hold)}
+.pill.WATCH{color:var(--muted);border-color:var(--line);font-weight:500}
+.reason{font-size:12.5px;color:var(--muted);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.spark{flex:0 0 auto;margin-left:auto}
+.detail{margin-top:10px;display:flex;flex-direction:column;gap:8px;border-top:1px dashed var(--line);padding-top:10px}
+.detail .d{display:grid;grid-template-columns:96px auto minmax(0,1fr);gap:8px;align-items:start;font-size:12.5px}
+.detail .d .t{color:var(--fg);font-weight:500}
+.detail .d .x{color:var(--muted);white-space:normal}
+.empty{padding:28px 14px;text-align:center;color:var(--muted)}
+footer{color:var(--muted);font-size:12px;display:flex;flex-direction:column;gap:8px}
+.load{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.load label{border:1px dashed var(--line);border-radius:8px;padding:6px 12px;cursor:pointer;background:var(--surface);color:var(--fg)}
+.load input{position:absolute;opacity:0;width:1px;height:1px}
+@media (max-width:480px){
+  .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .listhead,.r1{grid-template-columns:minmax(0,1fr) 76px 76px}
+  .spark{display:none}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>開明體系看盤</h1>
+    <span class="asof" id="asof"></span>
+  </header>
+
+  <nav class="tabs" id="tabs" role="tablist" aria-label="策略"></nav>
+
+  <section class="card" id="stratCard" aria-live="polite"></section>
+
+  <div class="toolbar" role="group" aria-label="篩選">
+    <button class="chip" data-f="all" aria-pressed="true">全部</button>
+    <button class="chip" data-f="signal" aria-pressed="false">今日訊號</button>
+    <button class="chip" data-f="hold" aria-pressed="false">持有中</button>
+    <button class="chip" data-f="etf" aria-pressed="false">ETF</button>
+    <span class="spacer"></span>
+    <label for="sort" class="asof">排序</label>
+    <select id="sort">
+      <option value="score">策略分數</option>
+      <option value="chg">漲跌幅</option>
+      <option value="code">代號</option>
+    </select>
+  </div>
+
+  <div class="list">
+    <div class="listhead"><span>投資產品</span><span>收盤</span><span>漲跌</span></div>
+    <div id="rows"></div>
+  </div>
+
+  <footer>
+    <div class="load">
+      <label for="file">載入最新 signals.json</label>
+      <input type="file" id="file" accept="application/json,.json">
+      <span id="loadMsg"></span>
+    </div>
+    <div>訊號由 GitHub Actions 每個交易日 17:30 產生（tools/export_signals.py），收盤後判斷、隔日開盤執行。回測績效為歷史樣本外結果，不代表未來報酬；本頁不構成投資建議。</div>
+  </footer>
+</div>
+
+<script>
+const EMBEDDED = /*__DATA__*/null;
+const ACT = {BUY:"買進",SELL:"賣出",HOLD:"持有",WATCH:"觀望"};
+const state = {data:EMBEDDED, strat:null, filter:"all", sort:"score", open:new Set()};
+try{ const s = localStorage.getItem("ems_strat"); if(s) state.strat = s; }catch(e){}
+
+const $ = id => document.getElementById(id);
+const pct = (v,d=1) => v==null ? "—" : (v>0?"+":"")+(v*100).toFixed(d)+"%";
+const cls = v => v>0 ? "up" : v<0 ? "down" : "flat";
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function spark(vals, dir){
+  const v = vals.filter(x => x!=null); if(v.length < 2) return "";
+  const w=72,h=26,min=Math.min(...v),max=Math.max(...v),span=(max-min)||1;
+  const pts = v.map((y,i)=>[(i/(v.length-1))*w, h-2-((y-min)/span)*(h-4)]);
+  const d = pts.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" ");
+  const col = dir>=0 ? "var(--up)" : "var(--down)";
+  const last = pts[pts.length-1];
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true">
+    <path d="${d} L${w} ${h} L0 ${h} Z" fill="${col}" opacity=".10"/>
+    <path d="${d}" fill="none" stroke="${col}" stroke-width="1.4"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="2.2" fill="${col}"/></svg>`;
+}
+
+function renderTabs(){
+  const d = state.data;
+  if(!state.strat || !d.strategies.some(s=>s.name===state.strat)) state.strat = d.strategies[0].name;
+  $("tabs").innerHTML = d.strategies.map(s =>
+    `<button class="tab" role="tab" data-s="${s.name}" aria-selected="${s.name===state.strat}">${esc(s.title.replace(/（.*?）/,""))}</button>`).join("");
+}
+
+function renderCard(){
+  const d = state.data, s = d.strategies.find(x=>x.name===state.strat);
+  const b = d.benchmarks["0050買進持有"] || {};
+  const t = s.test || {};
+  const stat = (k,v,bv,isPct=true) => `<div class="stat"><span class="k">${k}</span>
+      <span class="v num">${v==null?"—":isPct?pct(v):v.toFixed(2)}</span>
+      <span class="b num">0050 ${bv==null?"—":isPct?pct(bv):bv.toFixed(2)}</span></div>`;
+  $("stratCard").innerHTML = `
+    <h2>${esc(s.title)}</h2>
+    <p>${esc(s.description)}</p>
+    ${s.synthetic ? `<div class="warn">籌碼資料為模擬值，訊號與績效僅供檢查流程。到 GitHub Actions 抓到 FinMind 真實法人資料後才有參考價值。</div>` : ""}
+    <div class="stats">
+      ${stat("樣本外年化", t.cagr, b.cagr)}
+      ${stat("Sharpe", t.sharpe, b.sharpe, false)}
+      ${stat("最大回撤", t.max_drawdown, b.max_drawdown)}
+      <div class="stat"><span class="k">年週轉／成本</span><span class="v num">${t.annual_turnover==null?"—":t.annual_turnover.toFixed(1)+"x"}</span><span class="b num">成本 ${pct(t.cost_drag)}</span></div>
+    </div>
+    <p class="num">測試期 ${esc(s.test_period || "—")}</p>`;
+}
+
+function renderRows(){
+  const d = state.data, name = state.strat;
+  let list = d.stocks.slice();
+  const sig = s => s.signals[name] || {action:"WATCH"};
+  if(state.filter==="signal") list = list.filter(s => ["BUY","SELL"].includes(sig(s).action));
+  if(state.filter==="hold") list = list.filter(s => ["BUY","HOLD"].includes(sig(s).action));
+  if(state.filter==="etf") list = list.filter(s => s.etf);
+  const rank = {BUY:0,SELL:1,HOLD:2,WATCH:3};
+  list.sort((a,b) => {
+    if(state.sort==="chg") return (b.change_pct??-1e9)-(a.change_pct??-1e9);
+    if(state.sort==="code") return a.code.localeCompare(b.code);
+    const ra = rank[sig(a).action], rb = rank[sig(b).action];
+    return ra!==rb ? ra-rb : (sig(b).score??-1e9)-(sig(a).score??-1e9);
+  });
+  if(!list.length){ $("rows").innerHTML = `<div class="empty">這個策略今天沒有符合條件的股票。</div>`; return; }
+  const titles = Object.fromEntries(d.strategies.map(s=>[s.name, s.title.replace(/（.*?）/,"")]));
+  $("rows").innerHTML = list.map(s => {
+    const g = sig(s), dir = s.change ?? 0, open = state.open.has(s.code);
+    const detail = open ? `<div class="detail">${d.strategies.map(st => {
+        const x = s.signals[st.name] || {action:"WATCH"};
+        return `<div class="d"><span class="t">${esc(titles[st.name])}</span><span class="pill ${x.action}">${ACT[x.action]}</span><span class="x">${esc(x.reason||"")}${st.synthetic?"（模擬籌碼）":""}</span></div>`;
+      }).join("")}<div class="d"><span class="t">今日</span><span></span><span class="x num">開 ${s.open} ／ 量 ${s.volume_lots.toLocaleString()} 張</span></div></div>` : "";
+    return `<button class="row" data-c="${s.code}" aria-expanded="${open}">
+      <div class="r1">
+        <div class="id"><span class="code">${s.code}<small>${s.etf?"ETF":"TWSE"}</small></span><span class="name">${esc(s.name)}</span></div>
+        <div class="px num"><span class="p">${s.close}</span><span class="rng">${s.low}–${s.high}</span></div>
+        <div class="chg num ${cls(dir)}"><span>${dir>0?"+":""}${s.change}</span><span>${s.change_pct>0?"+":""}${s.change_pct}%</span></div>
+      </div>
+      <div class="r2"><span class="pill ${g.action}">${ACT[g.action]}</span><span class="reason">${esc(g.reason||"")}</span>${spark(s.spark, (s.spark.at(-1)??0)-(s.spark[0]??0))}</div>
+      ${detail}
+    </button>`;
+  }).join("");
+}
+
+function render(){
+  const d = state.data;
+  $("asof").textContent = `資料日期 ${d.as_of}　產生於 ${d.generated_at}`;
+  renderTabs(); renderCard(); renderRows();
+}
+
+$("tabs").addEventListener("click", e => {
+  const b = e.target.closest(".tab"); if(!b) return;
+  state.strat = b.dataset.s; try{ localStorage.setItem("ems_strat", state.strat); }catch(err){}
+  render();
+});
+document.querySelectorAll(".chip").forEach(c => c.addEventListener("click", () => {
+  state.filter = c.dataset.f;
+  document.querySelectorAll(".chip").forEach(x => x.setAttribute("aria-pressed", x===c));
+  renderRows();
+}));
+$("sort").addEventListener("change", e => { state.sort = e.target.value; renderRows(); });
+$("rows").addEventListener("click", e => {
+  const r = e.target.closest(".row"); if(!r) return;
+  const c = r.dataset.c; state.open.has(c) ? state.open.delete(c) : state.open.add(c);
+  renderRows();
+});
+$("file").addEventListener("change", e => {
+  const f = e.target.files[0]; if(!f) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    try{
+      const d = JSON.parse(rd.result);
+      if(!d.stocks || !d.strategies) throw new Error("缺少 stocks 或 strategies 欄位");
+      state.data = d; state.open.clear(); render();
+      $("loadMsg").textContent = `已載入 ${d.as_of} 的訊號`;
+    }catch(err){ $("loadMsg").textContent = `無法讀取：${err.message}。請選擇 output/signals.json。`; }
+  };
+  rd.readAsText(f);
+});
+render();
+</script>
