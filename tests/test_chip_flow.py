@@ -144,6 +144,73 @@ def test_explain_and_scores():
     assert sig["A"]["action"] in ("BUY", "HOLD") and sig["A"]["reason"]
 
 
+# ---------------------------------------------------------------- 籌碼晚一天公布
+def _late_chip_panel(lag_days=1, all_codes=True):
+    """收盤價已更新到最後一天，但籌碼最後 lag_days 天是 NaN（FinMind 尚未公布）。
+
+    最後一天刻意落在再平衡日（星期一），重現「rolling 整段 NaN → 全部被判 SELL」的情境。
+    """
+    p = make_panel(n_days=76)                 # 2025-01-06 起 76 個交易日 → 最後一天是星期一
+    assert p.dates[-1].dayofweek == 0
+    codes = p.codes if all_codes else ["A"]
+    for k in p.chip:
+        p.chip[k].loc[p.dates[-lag_days]:, codes] = np.nan
+    return p
+
+
+@pytest.mark.parametrize("lag_days", [1, 2])
+def test_late_chip_does_not_sell_everything(lag_days):
+    s = ChipFlow()
+    kw = dict(top_n=2, buffer=0, rebalance_weeks=1, lookback=5, ma=20, exit_ma=20)
+    full = s.target_weights(make_panel(n_days=76), **kw)
+    late_p = _late_chip_panel(lag_days)
+    late = s.target_weights(late_p, **kw)
+    # 籌碼完整時最後一天是再平衡日，A 持有中
+    assert full["A"].iloc[-1] == 0.5
+    # 籌碼缺漏的那幾天：不調整（整列 NaN），不是全部歸零
+    assert late.iloc[-lag_days:].isna().all().all()
+    # 缺漏之前的權重與完整資料完全相同
+    pd.testing.assert_frame_equal(late.iloc[:-lag_days], full.iloc[:-lag_days])
+    sig = {x["code"]: x["action"] for x in s.latest_signals(late_p, **kw)}
+    assert sig["A"] == "HOLD", sig
+    assert "SELL" not in sig.values()
+    # 顯示用分數沿用最後一個籌碼可用日
+    sc = s.scores(late_p, **kw)
+    assert sc["A"].iloc[-1] == pytest.approx(sc["A"].iloc[-lag_days - 1])
+    assert "籌碼資料至" in s.explain(late_p, "A", **kw)
+
+
+def test_late_chip_single_stock_keeps_holding():
+    """只有持股 A 的籌碼晚到（其他股票有資料）→ A 分數 NaN，但趨勢仍在 → 續抱，不賣。"""
+    s = ChipFlow()
+    kw = dict(top_n=2, buffer=0, rebalance_weeks=1, lookback=5, ma=20, exit_ma=20)
+    p = _late_chip_panel(1, all_codes=False)
+    w = s.target_weights(p, **kw)
+    assert w["A"].iloc[-1] == 0.5
+    sig = {x["code"]: x["action"] for x in s.latest_signals(p, **kw)}
+    assert sig["A"] == "HOLD"
+
+
+def test_late_chip_deferred_rebalance_happens_when_chip_arrives():
+    """再平衡日籌碼缺漏 → 順延到下一個籌碼可用日執行。"""
+    p = make_panel(n_days=80)
+    mon = p.dates[70]
+    assert mon.dayofweek == 0
+    for k in p.chip:
+        p.chip[k].loc[mon, :] = np.nan
+    w = ChipFlow().target_weights(p, top_n=2, buffer=0, rebalance_weeks=1, lookback=5, exit_ma=20)
+    assert w.loc[mon].isna().all()
+    assert w.loc[p.dates[71]].notna().all()        # 星期二補做再平衡
+
+
+def test_late_chip_no_lookahead():
+    p = _late_chip_panel(2)
+    s = ChipFlow()
+    for frac in [(0.5, 0.75), (0.9, 0.99)]:
+        assert_no_lookahead(s, p, params={"lookback": 5, "rebalance_weeks": 1, "exit_ma": 20},
+                            cut_points=frac)
+
+
 # ---------------------------------------------------------------- 真實價格 + 模擬籌碼
 @pytest.fixture(scope="module")
 def real_panel():
@@ -154,12 +221,14 @@ def real_panel():
     return p
 
 
+@pytest.mark.realdata
 def test_real_no_lookahead(real_panel):
     s = ChipFlow()
     assert_no_lookahead(s, real_panel)
     assert_no_lookahead(s, real_panel, params={"lookback": 20, "top_n": 8, "rebalance_weeks": 1})
 
 
+@pytest.mark.realdata
 def test_real_weight_sanity(real_panel):
     s = ChipFlow()
     for params in [{}] + s.param_grid:
@@ -174,9 +243,31 @@ def test_real_weight_sanity(real_panel):
         assert rows.notna().all(axis=1).all()        # 有值的列不能部分 NaN
 
 
+@pytest.mark.realdata
 def test_real_turnover_target(real_panel):
+    # 績效門檻只在 realdata 層檢查（合成資料版見 test_synthetic_turnover_target）
     s = ChipFlow()
     m = backtest(real_panel, s.target_weights(real_panel, **s.default_params)).metrics()
+    assert m["annual_turnover"] < 12, m["annual_turnover"]
+
+
+def test_synthetic_turnover_target():
+    """合成資料版的週轉門檻：每日關卡用，不依賴 data/daily。"""
+    rng = np.random.default_rng(0)
+    n_days, codes = 500, [f"S{i}" for i in range(20)]
+    idx = pd.bdate_range("2023-01-02", periods=n_days)
+    close = pd.DataFrame(100 * np.exp(np.cumsum(rng.normal(0.0004, 0.015, (n_days, 20)), axis=0)),
+                         index=idx, columns=codes)
+    vol = pd.DataFrame(1_000_000.0, index=idx, columns=codes)
+    z = pd.DataFrame(0.0, index=idx, columns=codes)
+    ret = close.pct_change().fillna(0.0)
+    chip = {"foreign_net": (np.tanh(ret * 30 + rng.normal(0, 0.8, ret.shape)) * 200_000).round(),
+            "trust_net": (np.tanh(ret * 15 + rng.normal(0, 0.8, ret.shape)) * 50_000).round(),
+            "dealer_net": z.copy()}
+    p = Panel(open=close.shift(1).fillna(close), high=close * 1.01, low=close * 0.99, close=close,
+              volume=vol, dividend=z, chip=chip)
+    s = ChipFlow()
+    m = backtest(p, s.target_weights(p, **s.default_params)).metrics()
     assert m["annual_turnover"] < 12, m["annual_turnover"]
 
 
@@ -271,13 +362,17 @@ def test_fetch_chip_cli_parses_args(monkeypatch, tmp_path):
     mod = _load_fetch_chip()
     got = {}
 
-    def fake_run(codes, start, directory, pause, retries):
-        got.update(codes=codes, start=start, directory=directory, pause=pause, retries=retries)
+    def fake_run(codes, start, directory, pause, retries, incremental=False):
+        got.update(codes=codes, start=start, directory=directory, pause=pause, retries=retries,
+                   incremental=incremental)
         return []
 
     monkeypatch.setattr(mod, "run", fake_run)
     rc = mod.main(["--start", "2023-06-01", "--codes", "2330", "--out", str(tmp_path), "--sleep", "0.5"])
     assert rc == 0
     assert got["start"] == "2023-06-01" and got["codes"] == ["2330"] and got["pause"] == 0.5
+    assert got["incremental"] is True                # 預設增量
+    mod.main(["--full", "--out", str(tmp_path)])
+    assert got["incremental"] is False
     rc = mod.main(["--out", str(tmp_path)])
     assert got["codes"] == list(TW50)

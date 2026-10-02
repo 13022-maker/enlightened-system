@@ -90,6 +90,7 @@ footer{color:var(--muted);font-size:12px;display:flex;flex-direction:column;gap:
     <h1>開明體系看盤</h1>
     <span class="asof" id="asof"></span>
   </header>
+  <div class="warn" id="stale" hidden></div>
 
   <nav class="tabs" id="tabs" role="tablist" aria-label="策略"></nav>
 
@@ -212,6 +213,10 @@ function renderRows(){
 function render(){
   const d = state.data;
   $("asof").textContent = `資料日期 ${d.as_of}　產生於 ${d.generated_at}`;
+  // 日K 更新失敗的股票（update_data.py → data_status.json → signals.json.stale_codes）
+  const stale = d.stale_codes || [];
+  $("stale").hidden = !stale.length;
+  $("stale").textContent = stale.length ? `⚠ ${stale.length} 檔日K 未更新到最新（${stale.slice(0,8).join("、")}${stale.length>8?"…":""}），其訊號可能落後。` : "";
   renderTabs(); renderCard(); renderRows();
 }
 

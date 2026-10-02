@@ -12,6 +12,8 @@
        其餘持股以「估計的漂移權重」送出，避免為了把其他部位拉回等權而產生額外週轉；
        停損釋放的現金留到下個再平衡日才再投入。
     4. 股利欄異常值（單次 > 前收 15%）視為資料錯誤，見 clean_dividend()。
+    5. Point-in-time 股票池：候選股只限再平衡日當天的指數成分股（panel.universe_mask()）；
+       已持有但被調出的股票不再符合續抱條件，於下一個再平衡日賣出。無成分股資料時全部可選（舊行為）。
 
 時序：t 日權重只用到 ≤ t 日的收盤資料，於 t+1 開盤成交（由引擎處理）。
 """
@@ -107,6 +109,7 @@ class SwingMomentum(Strategy):
         ma = f["ma"].values
         atr = f["atr"].values
         regime = f["regime"].values
+        member = panel.universe_mask().values
         rebal = _rebalance_mask(panel.dates, rebal_weeks)
         n_days, n = c.shape
 
@@ -141,7 +144,8 @@ class SwingMomentum(Strategy):
                     info["regime_off_days"] += 1
                     target_set: List[int] = []
                 else:
-                    elig = ~np.isnan(mom[t]) & ~np.isnan(ma[t]) & (c[t] > ma[t]) & (mom[t] > 0)
+                    elig = (~np.isnan(mom[t]) & ~np.isnan(ma[t]) & (c[t] > ma[t]) & (mom[t] > 0)
+                            & member[t])
                     cand = np.nonzero(elig)[0]
                     ranked = cand[np.argsort(-mom[t, cand], kind="stable")]
                     rank = {i: r for r, i in enumerate(ranked)}

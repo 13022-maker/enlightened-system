@@ -13,6 +13,13 @@
        用較寬鬆的條件出場以降低週轉）；其餘名額由合格股中排名最高者補滿；
        每檔等權 1/top_n，不足 top_n 檔的部分為現金。
     5. 非再平衡日輸出整列 NaN（= 不調整）。
+    6. 籌碼缺資料的防護（FinMind 法人資料常晚於收盤價公布）：
+       - 「籌碼可用日」＝ 當天至少一檔有法人資料（只看當日，無前視）。
+       - 再平衡日若籌碼尚未公布 → 該列整列 NaN（不調整），再平衡順延到下一個籌碼可用日
+         （最多順延 _MAX_DEFER 個交易日），避免 rolling 整段 NaN 導致全部持股被判 SELL。
+       - 已持有者若分數因籌碼缺漏而為 NaN，只要價格仍在 MA(exit_ma) 之上就續抱
+         （缺資料 ≠ 賣出訊號）。
+       - scores()/explain() 對籌碼缺漏的日子沿用最後一個籌碼可用日的數值（ffill，只用過去）。
 
 時序：t 日權重只用 ≤ t 日的收盤與籌碼（法人資料於收盤後公布），隔日開盤成交，無前視。
 """
@@ -30,6 +37,8 @@ from .base import Strategy
 _CHIP_KEYS = ("foreign_net", "trust_net", "dealer_net")
 # 固定曆法錨點（星期一），讓「每 k 週再平衡」的排程不因資料起點不同而改變
 _WEEK_ANCHOR = pd.Timestamp("2000-01-03")
+# 再平衡日遇到籌碼未公布時，最多順延幾個交易日（超過則放棄本次再平衡）
+_MAX_DEFER = 5
 
 
 def _require_chip(panel: Panel) -> None:
@@ -50,6 +59,18 @@ def _streak(flag: pd.DataFrame) -> pd.DataFrame:
     for t in range(a.shape[0]):
         out[t] = np.where(a[t], (out[t - 1] if t > 0 else 0) + 1, 0)
     return pd.DataFrame(out, index=flag.index, columns=flag.columns)
+
+
+def _chip_available(panel: Panel) -> pd.Series:
+    """逐日判斷籌碼是否已公布：當天 foreign_net 與 trust_net 至少各有一檔非 NaN。
+
+    只看當日那一列，與未來資料無關（不會造成前視）。
+    """
+    idx, cols = panel.dates, panel.codes
+    ok = pd.Series(True, index=idx)
+    for k in ("foreign_net", "trust_net"):
+        ok &= panel.chip[k].reindex(index=idx, columns=cols).notna().any(axis=1)
+    return ok
 
 
 def _rebalance_mask(dates: pd.DatetimeIndex, weeks: int) -> np.ndarray:
@@ -105,13 +126,16 @@ class ChipFlow(Strategy):
         eligible = trend & (score > 0) & score.notna()
         exit_ok = panel.close > ind.sma(panel.close, int(exit_ma))
         return {"score": score, "eligible": eligible, "hold_ok": exit_ok, "f_ratio": f_ratio, "t_ratio": t_ratio,
+                "chip_ok": _chip_available(panel),
                 "f_n": f_n, "t_n": t_n, "t_streak": t_streak, "ma": ma_s,
                 "f_streak": _streak(chip["foreign_net"] > 0),
                 "f_prev": chip["foreign_net"].rolling(n, min_periods=n).sum().shift(n)}
 
     def scores(self, panel: Panel, **params) -> pd.DataFrame:
+        """顯示用分數：籌碼未公布的日子沿用最後一個籌碼可用日的分數（ffill，只用過去資料）。"""
         p = {**self.default_params, **params}
-        return self._features(panel, **p)["score"]
+        feat = self._features(panel, **p)
+        return _carry_over_missing_chip(feat["score"], feat["chip_ok"])
 
     def target_weights(self, panel: Panel, lookback=20, top_n=10, buffer=20, rebalance_weeks=4,
                        ma=20, exit_ma=60, trust_weight=2.0, streak_bonus=0.02, **_) -> pd.DataFrame:
@@ -121,21 +145,34 @@ class ChipFlow(Strategy):
         elig = feat["eligible"].values
         hold_ok = feat["hold_ok"].values
         reb = _rebalance_mask(panel.dates, rebalance_weeks)
+        chip_ok = feat["chip_ok"].values
+        univ = panel.universe_mask().values      # 歷史成分股遮罩：只能新選入當日成分股，被調出者於再平衡日出場
         n_days, n = score.shape
         top_n, buffer = int(top_n), int(buffer)
         size = 1.0 / top_n
         w = np.full((n_days, n), np.nan)
         held: set = set()
+        pending = -1                     # 被順延的再平衡日索引（-1 = 無）
         for t in range(n_days):
-            if not reb[t]:
+            if reb[t]:
+                pending = t
+            if pending < 0:
                 continue
+            if not chip_ok[t]:
+                # 籌碼尚未公布：本日不調整（整列 NaN），再平衡順延；超過上限就放棄
+                if t - pending >= _MAX_DEFER:
+                    pending = -1
+                continue
+            pending = -1
             scored = [i for i in range(n) if not np.isnan(score[t, i])]
             ranked = sorted(scored, key=lambda i: (-score[t, i], i))  # 同分以欄位順序穩定排序
             rank = {i: r for r, i in enumerate(ranked)}
-            keep = [i for i in held if i in rank and rank[i] < top_n + buffer
-                    and hold_ok[t, i] and score[t, i] > 0]
-            keep = sorted(keep, key=lambda i: rank[i])[:top_n]
-            new = [i for i in ranked if elig[t, i] and i not in keep][: top_n - len(keep)]
+            # 續抱條件：排名在緩衝區內且法人仍淨買；或分數因籌碼缺漏為 NaN 但價格趨勢仍在
+            keep = [i for i in held if univ[t, i] and hold_ok[t, i] and (
+                (i in rank and rank[i] < top_n + buffer and score[t, i] > 0)
+                or np.isnan(score[t, i]))]
+            keep = sorted(keep, key=lambda i: (rank.get(i, len(ranked)), i))[:top_n]  # 無分數者排最後
+            new = [i for i in ranked if elig[t, i] and univ[t, i] and i not in keep][: top_n - len(keep)]
             held = set(keep) | set(new)
             w[t] = 0.0
             for i in held:
@@ -149,10 +186,17 @@ class ChipFlow(Strategy):
             return "ETF 不納入籌碼策略"
         feat = self._features(panel, **p)
         n = int(p["lookback"])
-        g = lambda k: feat[k][code].iloc[-1]
+        ok = feat["chip_ok"]
+        if not ok.any():
+            return "尚無籌碼資料"
+        # 籌碼未公布時，以最後一個籌碼可用日說明，並註明資料日期
+        at = ok[ok].index[-1]
+        g = lambda k: feat[k][code].loc[at]
         if pd.isna(g("f_ratio")) or pd.isna(g("ma")):
-            return "資料不足（暖身期或成交量為 0）"
+            return "資料不足（暖身期、成交量為 0 或籌碼缺漏）"
         parts = []
+        if at != panel.dates[-1]:
+            parts.append(f"籌碼資料至{at.date()}")
         ts, fs = int(g("t_streak")), int(g("f_streak"))
         if ts >= 2:
             parts.append(f"投信連買{ts}日")
@@ -167,8 +211,21 @@ class ChipFlow(Strategy):
                      f"（佔量{g('f_ratio'):+.1%}）")
         parts.append(f"投信{n}日{'買' if g('t_n') >= 0 else '賣'}超{abs(g('t_n')) / 1000:,.0f}張"
                      f"（佔量{g('t_ratio'):+.1%}）")
-        above = panel.close[code].iloc[-1] > g("ma")
+        above = panel.close[code].loc[at] > g("ma")
         parts.append(f"收盤{'站上' if above else '跌破'}MA{int(p['ma'])}")
         sc = g("score")
         parts.append(f"分數{sc:+.3f}" + ("（合格）" if bool(feat["eligible"][code].iloc[-1]) else ""))
         return "、".join(parts)
+
+
+def _carry_over_missing_chip(df: pd.DataFrame, chip_ok: pd.Series) -> pd.DataFrame:
+    """籌碼未公布日的數值改用最後一個籌碼可用日的值（向前填補，不使用未來資料）。
+
+    籌碼可用日的數值維持原樣（包含暖身期 / ETF 的 NaN）。
+    """
+    bad = ~chip_ok.reindex(df.index).fillna(False).astype(bool)
+    out = df.copy()
+    out.loc[bad] = np.nan
+    filled = out.ffill()
+    out.loc[bad] = filled.loc[bad]
+    return out

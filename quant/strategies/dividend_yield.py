@@ -8,7 +8,9 @@
        資料不足一年且尚未見到任何除息 → 未知（NaN），不參與排名。
     3. 殖利率 = 年化股利 / 收盤價。品質/風險濾網（價值陷阱）：收盤 > MA(trend_n)、
        含息 mom_n 日報酬 > mom_floor、殖利率 ≤ max_yield（過高多為一次性或景氣循環高峰）。
-    4. 只在再平衡日（每季或每半年第一個交易日）調整，其餘整列 NaN；持股在名次 ≤ top_n+buffer
+    4. Point-in-time 股票池：只選再平衡日當天的指數成分股（panel.universe_mask()）；被調出的持股
+       不再合格，於下一個再平衡日賣出。
+    5. 只在再平衡日（每季或每半年第一個交易日）調整，其餘整列 NaN；持股在名次 ≤ top_n+buffer
        且仍通過濾網則續抱（降低週轉），其餘依殖利率名次補滿，等權或殖利率加權。只做多個股，不含 ETF。
 
 所有計算只使用 t 日收盤（含）以前資料。
@@ -146,7 +148,7 @@ class DividendYield(Strategy):
         p = {**self.default_params, **params}
         top_n, buffer, weighting = int(p["top_n"]), int(p["buffer"]), p["weighting"]
         f = self._features(panel, **p)
-        elig = self._eligible(f, **p)
+        elig = self._eligible(f, **p) & panel.universe_mask()
         stocks = self._stock_cols(panel)
         yld = f["yield"][stocks]
         reb = rebalance_mask(panel.dates, p["freq"])

@@ -12,6 +12,8 @@ on:
         default: ''
 jobs:
   stock-monitor:
+    # 只在 PRIMARY_REPO 指定的 repo 執行（未設定則都執行），避免上游與 fork 重複推播
+    if: ${{ github.repository == vars.PRIMARY_REPO || vars.PRIMARY_REPO == '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

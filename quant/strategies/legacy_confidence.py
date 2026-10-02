@@ -5,6 +5,8 @@
 進場：信心度 ≥ threshold
 出場：收盤跌破 MA20、RSI > 80、停損 -5%、停利 +15%（README Phase 4 規則）
 部位：每檔固定 1/max_positions，最多 max_positions 檔
+股票池：只在「當日為指數成分股」（panel.universe_mask()）時可新進場；
+        已持有但被調出者，因本策略每日檢查（每天都是再平衡日），於調出後第一個交易日出場。
 """
 from __future__ import annotations
 
@@ -45,6 +47,7 @@ class LegacyConfidence(Strategy):
         ma20 = ind.sma(panel.close, 20).values
         r = ind.rsi(panel.close, 14).values
         tradable = np.array([not panel.is_etf(x) for x in panel.codes])
+        member = panel.universe_mask().values
         n_days, n = c.shape
         w = np.zeros((n_days, n))
         held = {}                                     # i -> entry close
@@ -55,12 +58,13 @@ class LegacyConfidence(Strategy):
                 if np.isnan(p):
                     continue
                 e = held[i]
-                if p < ma20[t, i] or r[t, i] > 80 or p <= e * (1 - stop) or p >= e * (1 + target):
+                if (p < ma20[t, i] or r[t, i] > 80 or p <= e * (1 - stop) or p >= e * (1 + target)
+                        or not member[t, i]):
                     del held[i]
             slots = max_positions - len(held)
             if slots > 0:
                 cand = [(conf[t, i], i) for i in range(n)
-                        if tradable[i] and i not in held and conf[t, i] >= threshold]
+                        if tradable[i] and member[t, i] and i not in held and conf[t, i] >= threshold]
                 for _, i in sorted(cand, reverse=True)[:slots]:
                     held[i] = c[t, i]
             for i in held:

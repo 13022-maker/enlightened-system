@@ -30,6 +30,7 @@ def make_panel(closes: dict, n: int) -> Panel:
 
 
 # ---------------------------------------------------------------- 真實資料
+@pytest.mark.realdata
 def test_no_lookahead_real_data(real_panel):
     s = SwingMomentum()
     assert_no_lookahead(s, real_panel)
@@ -37,6 +38,7 @@ def test_no_lookahead_real_data(real_panel):
         assert_no_lookahead(s, real_panel, g)
 
 
+@pytest.mark.realdata
 def test_weights_constraints_and_no_etf(real_panel):
     s = SwingMomentum()
     for g in s.param_grid:
@@ -51,6 +53,7 @@ def test_weights_constraints_and_no_etf(real_panel):
         assert not w.isna().any(axis=1).where(~w.isna().all(axis=1), False).any()
 
 
+@pytest.mark.realdata
 def test_low_turnover_and_runs(real_panel):
     s = SwingMomentum()
     res = backtest(real_panel, s.target_weights(real_panel))
@@ -59,6 +62,7 @@ def test_low_turnover_and_runs(real_panel):
     assert not any(real_panel.is_etf(t.code) for t in res.trades)
 
 
+@pytest.mark.realdata
 def test_scores_and_explain(real_panel):
     s = SwingMomentum()
     sc = s.scores(real_panel)

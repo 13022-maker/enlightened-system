@@ -94,11 +94,13 @@ def real_panel():
     return load_panel(list(TW50) + list(ETFS))
 
 
+@pytest.mark.realdata
 def test_real_data_no_lookahead(real_panel):
     assert_no_lookahead(DividendYield(), real_panel)
     assert_no_lookahead(DividendYield(), real_panel, params={"freq": "H", "top_n": 5})
 
 
+@pytest.mark.realdata
 def test_real_weights_valid(real_panel):
     s = DividendYield()
     for params in s.param_grid:

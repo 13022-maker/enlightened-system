@@ -1,0 +1,7 @@
+# 開明體系 Quant（.github/workflows/quant-daily.yml 使用）
+# 只放 quant/、tools/ 需要的套件，與 requirements.txt（看盤 Bot）分開，安裝更快、快取更穩定
+pandas>=2.2,<4
+numpy>=1.26
+yfinance>=1.4,<2
+requests>=2.31
+pytest

@@ -1,43 +1,136 @@
 name: Quant 每日訊號與回測
 on:
   schedule:
-    - cron: '30 9 * * 1-5'    # 台灣時間 17:30（收盤＋法人資料公布後）
+    - cron: '50 12 * * 1-5'   # 台灣時間 20:50（FinMind 三大法人資料約 20:00 後才更新）
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: write   # 提交資料與訊號
+  actions: write    # 保持排程啟用（enable workflow API）
+# 同一時間只跑一個，後到的排隊等前一個結束（不取消，避免推到一半被砍）
+concurrency:
+  group: quant-daily
+  cancel-in-progress: false
 jobs:
   quant:
+    # 只在 PRIMARY_REPO 指定的 repo 執行（未設定則都執行），避免上游與 fork 重複推播
+    if: ${{ github.repository == vars.PRIMARY_REPO || vars.PRIMARY_REPO == '' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: '1'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-quant.txt
       - name: 安裝套件
-        run: pip install -r requirements.txt pytest
-      - name: 更新日K
-        run: python tools/update_data.py --start 2015-01-01
-      - name: 更新法人籌碼（FinMind）
+        run: pip install -r requirements-quant.txt
+
+      - name: 保持排程啟用
+        # GitHub 會在 repo 60 天無活動後停用排程；每次排程觸發時重新 enable。失敗不影響 job。
+        if: ${{ github.event_name == 'schedule' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/quant-daily.yml/enable"
+
+      - name: 更新日K（增量）
+        # 全部失敗時 exit 2；continue-on-error 讓後續沿用舊資料繼續（狀態寫在 output/data_status.json）
+        id: update_data
+        continue-on-error: true
+        run: python tools/update_data.py
+      - name: 更新法人籌碼（FinMind，增量）
+        continue-on-error: true
         env:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
-        run: python tools/fetch_chip.py --start 2015-01-01 || echo "籌碼抓取失敗，沿用舊資料"
-      - name: 單元測試
-        run: python -m pytest -q
+        run: python tools/fetch_chip.py
+
+      - name: 單元測試（每日關卡，不含真實資料績效門檻）
+        run: python -m pytest -q -m "not realdata"
       - name: 回測（walk-forward）
         run: python tools/run_backtest.py
       - name: 產出訊號
         run: |
           python tools/export_signals.py
           python tools/build_dashboard.py
+
+      - name: 資料陳舊度檢查
+        # signals 的 as_of 距今（台灣時間）超過 5 個日曆日（≈3 個交易日）→ Telegram 警告
+        if: ${{ !cancelled() }}
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          AS_OF=$(python -c "import json;print(json.load(open('output/signals.json'))['as_of'])" 2>/dev/null || echo "")
+          TODAY=$(TZ=Asia/Taipei date +%F)
+          if [ -z "$AS_OF" ]; then
+            AGE=999
+          else
+            AGE=$(( ( $(date -d "$TODAY" +%s) - $(date -d "$AS_OF" +%s) ) / 86400 ))
+          fi
+          echo "as_of=${AS_OF:-無} 今日=${TODAY} 落後 ${AGE} 天"
+          if [ "$AGE" -gt 5 ]; then
+            echo "::warning::訊號資料已落後 ${AGE} 天（as_of=${AS_OF:-無}）"
+            if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
+              MSG=$(printf '⚠️ 開明體系 Quant 資料陳舊\n訊號資料日期: %s（落後 %s 天）\n請檢查日K 更新是否持續失敗\n%s' "${AS_OF:-無}" "$AGE" "$RUN_URL")
+              curl -sS -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+                --data-urlencode "chat_id=${CHAT_ID}" \
+                --data-urlencode "text=${MSG}" > /dev/null || echo "::warning::陳舊警告推播失敗"
+            fi
+          fi
+
+      - name: 提交資料與訊號
+        # 只有 diff 時才 commit（同日重跑若內容不變就不會多 commit）；push 前 rebase，失敗重試
+        run: |
+          git config user.name "quant-bot"
+          git config user.email "quant-bot@users.noreply.github.com"
+          # dashboard_artifact.html 已列入 .gitignore；若仍被追蹤則移出版控（只需一次）
+          git rm --cached --ignore-unmatch -q output/dashboard_artifact.html
+          git add -A data output
+          # backtest_report.md 標題含執行日期：若只有日期那一行變了就不提交（假日重跑不產生 commit）
+          if [ -z "$(git diff --cached -U0 output/backtest_report.md | grep -E '^[+-][^+-]' | grep -v '策略回測比較')" ]; then
+            git restore --staged --worktree output/backtest_report.md 2>/dev/null || true
+          fi
+          if git diff --cached --quiet; then
+            echo "資料與訊號無變動，不提交"
+            exit 0
+          fi
+          git commit -m "Quant 每日更新 $(TZ=Asia/Taipei date +%F)"
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            echo "push 失敗，第 $i 次重試"; sleep $((i * 5))
+          done
+          exit 1
+
       - name: Telegram 推播
+        # 只在 as_of 與 output/last_notified.txt 不同時推；推播失敗只印 ::warning::
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python tools/notify_signals.py
-      - name: 提交資料與訊號
+      - name: 記錄推播日期
+        # last_notified.txt 需要進版控，下次執行才知道推過哪一天
         run: |
-          git config user.name "quant-bot"
-          git config user.email "quant-bot@users.noreply.github.com"
-          git add -A data output
-          git diff --cached --quiet || git commit -m "Quant 每日更新 $(TZ=Asia/Taipei date +%F)"
-          git push
+          git add output/last_notified.txt 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Quant 推播紀錄 $(cat output/last_notified.txt)"
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            echo "push 失敗，第 $i 次重試"; sleep $((i * 5))
+          done
+          echo "::warning::推播紀錄提交失敗，下次可能重複推播"
+
+      - name: 失敗告警
+        if: ${{ failure() }}
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          MSG=$(printf '🚨 開明體系 Quant 每日流程失敗\n時間: %s 台灣時間\n%s' "$(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')" "$RUN_URL")
+          curl -sS -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${MSG}" > /dev/null || true

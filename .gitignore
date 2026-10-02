@@ -205,3 +205,8 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Quant：dashboard 的 artifact 版本由 build_dashboard.py 每次重新產生，不進版控
+output/dashboard_artifact.html
+# update_data.py 每次執行產生的狀態檔（含時間戳），只供同一次 workflow 的 export_signals 讀取
+output/data_status.json
